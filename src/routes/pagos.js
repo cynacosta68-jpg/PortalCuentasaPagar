@@ -1,6 +1,8 @@
 'use strict';
 const pool = require('../db/pool');
 const { calcularRetencionesOrden } = require('../services/retenciones');
+const { generarOrdenPago, generarCertificadoRetencion } = require('../services/pdf');
+const { enviarOrdenPago, enviarAprobacionGerencia, enviarNotificacionEjecutada } = require('../services/email');
 
 function register(router) {
   router.get('/api/corridas', listarCorridas);
@@ -12,6 +14,7 @@ function register(router) {
   router.get('/api/corridas/:id/autorizar', autorizarCorrida); // link de gerencia
   router.post('/api/corridas/:id/rechazar', rechazarCorrida);
   router.get('/api/ordenes/:id/pdf', pdfOrden);
+  router.get('/api/certificados/:id/pdf', pdfCertificado);
 }
 
 // Genera el preview de una corrida sin persistir nada
@@ -207,13 +210,19 @@ async function ejecutarCorrida(req, res) {
         await generarCertificado(client, orden.id, 'iva', null, calc.retIva);
       }
 
-      ordenes.push({ ...orden, calc });
+      ordenes.push({ ...orden, calc, proveedor: p });
     }
 
     await client.query(
       `UPDATE corridas_pago SET estado = 'ejecutada', updated_at = now() WHERE id = $1`, [id]
     );
     await client.query('COMMIT');
+
+    // Enviar mails a proveedores en background (no bloquea la respuesta)
+    enviarMailsOrdenes(corrida, ordenes).catch(err =>
+      console.error('[pagos] Error enviando mails:', err)
+    );
+
     res.json({ ok: true, corrida_id: parseInt(id), ordenes_generadas: ordenes.length });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -237,8 +246,17 @@ async function planificarCorrida(req, res) {
     [token, expira, id]
   );
 
-  // TODO: enviar mail a gerencia con link de autorización
-  // await emailService.enviarAprobacion(email_gerencia, corrida, token);
+  const { rows: [corridaActualizada] } = await pool.query(
+    'SELECT * FROM corridas_pago WHERE id = $1', [id]
+  );
+
+  const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+  enviarAprobacionGerencia({
+    emailGerencia: email_gerencia,
+    corrida: corridaActualizada,
+    token,
+    baseUrl,
+  }).catch(err => console.error('[pagos] Error enviando mail gerencia:', err));
 
   res.json({ ok: true, mensaje: 'Corrida enviada a gerencia para aprobación' });
 }
@@ -294,8 +312,40 @@ async function rechazarCorrida(req, res) {
 }
 
 async function pdfOrden(req, res) {
-  // TODO: generar PDF con pdfkit
-  res.status(501).json({ error: 'PDF en construcción' });
+  const { id } = req.params;
+
+  const { rows: [orden] } = await pool.query(
+    `SELECT o.*, p.razon_social, p.cuit, p.mail
+     FROM ordenes_pago o JOIN proveedores p ON p.id = o.proveedor_id
+     WHERE o.id = $1`,
+    [id]
+  );
+  if (!orden) return res.status(404).json({ error: 'Orden no encontrada' });
+
+  const { rows: egresos } = await pool.query(
+    `SELECT e.tipo_comprobante, e.punto_venta, e.numero, e.fecha_comprobante, e.importe_total
+     FROM corrida_items ci JOIN egresos e ON e.id = ci.egreso_id
+     WHERE ci.corrida_id = $1 AND ci.proveedor_id = $2`,
+    [orden.corrida_id, orden.proveedor_id]
+  );
+
+  const { rows: certs } = await pool.query(
+    'SELECT * FROM certificados_retencion WHERE orden_pago_id = $1 ORDER BY tipo_retencion',
+    [id]
+  );
+
+  const empresa = {
+    razon_social: process.env.EMPRESA_NOMBRE || '',
+    cuit: process.env.EMPRESA_CUIT || '',
+    domicilio: process.env.EMPRESA_DOMICILIO || '',
+  };
+
+  const proveedor = { razon_social: orden.razon_social, cuit: orden.cuit, mail: orden.mail };
+  const buffer = await generarOrdenPago({ orden, proveedor, empresa, egresos, certs });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${orden.numero_orden}.pdf"`);
+  res.end(buffer);
 }
 
 async function listarCorridas(req, res) {
@@ -332,6 +382,105 @@ async function obtenerCorrida(req, res) {
   );
 
   res.json({ ...corrida, items, ordenes });
+}
+
+// ── PDF de certificado individual ────────────────────────────
+async function pdfCertificado(req, res) {
+  const { id } = req.params;
+
+  const { rows: [cert] } = await pool.query(
+    `SELECT cr.*, o.numero_orden, o.fecha_pago, o.corrida_id, o.proveedor_id
+     FROM certificados_retencion cr JOIN ordenes_pago o ON o.id = cr.orden_pago_id
+     WHERE cr.id = $1`,
+    [id]
+  );
+  if (!cert) return res.status(404).json({ error: 'Certificado no encontrado' });
+
+  const { rows: [proveedor] } = await pool.query(
+    'SELECT razon_social, cuit FROM proveedores WHERE id = $1', [cert.proveedor_id]
+  );
+
+  const empresa = {
+    razon_social: process.env.EMPRESA_NOMBRE || '',
+    cuit: process.env.EMPRESA_CUIT || '',
+    domicilio: process.env.EMPRESA_DOMICILIO || '',
+  };
+
+  const orden = { numero_orden: cert.numero_orden, fecha_pago: cert.fecha_pago };
+  const buffer = await generarCertificadoRetencion({ cert, orden, proveedor, empresa });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${cert.numero_cert}.pdf"`);
+  res.end(buffer);
+}
+
+// ── Envío masivo de mails post-ejecución ─────────────────────
+async function enviarMailsOrdenes(corrida, ordenes) {
+  const empresa = {
+    razon_social: process.env.EMPRESA_NOMBRE || '',
+    cuit: process.env.EMPRESA_CUIT || '',
+    domicilio: process.env.EMPRESA_DOMICILIO || '',
+  };
+
+  for (const ordenData of ordenes) {
+    const { calc } = ordenData;
+
+    // Re-fetch la orden guardada con id real
+    const { rows: [orden] } = await pool.query(
+      `SELECT o.*, p.razon_social, p.cuit, p.mail
+       FROM ordenes_pago o JOIN proveedores p ON p.id = o.proveedor_id
+       WHERE o.corrida_id = $1 AND o.proveedor_id = $2`,
+      [corrida.id, ordenData.proveedor_id || ordenData.calc?.proveedor_id]
+    );
+    if (!orden || !orden.mail) continue;
+
+    const { rows: egresos } = await pool.query(
+      `SELECT e.tipo_comprobante, e.punto_venta, e.numero, e.fecha_comprobante, e.importe_total
+       FROM corrida_items ci JOIN egresos e ON e.id = ci.egreso_id
+       WHERE ci.corrida_id = $1 AND ci.proveedor_id = $2`,
+      [corrida.id, orden.proveedor_id]
+    );
+
+    const { rows: certs } = await pool.query(
+      'SELECT * FROM certificados_retencion WHERE orden_pago_id = $1', [orden.id]
+    );
+
+    const proveedor = { razon_social: orden.razon_social, cuit: orden.cuit, mail: orden.mail };
+    const pdfOrdenBuf = await generarOrdenPago({ orden, proveedor, empresa, egresos, certs });
+
+    const certsPdf = [];
+    for (const cert of certs) {
+      const buf = await generarCertificadoRetencion({
+        cert,
+        orden: { numero_orden: orden.numero_orden, fecha_pago: orden.fecha_pago },
+        proveedor,
+        empresa,
+      });
+      certsPdf.push({ nombre: cert.numero_cert, buffer: buf });
+    }
+
+    await enviarOrdenPago({
+      destinatario: orden.mail,
+      razonSocial: orden.razon_social,
+      orden,
+      pdfOrden: pdfOrdenBuf,
+      certsPdf,
+    });
+
+    // Marcar mail enviado
+    await pool.query(
+      `UPDATE ordenes_pago SET mail_enviado_at = now() WHERE id = $1`, [orden.id]
+    );
+  }
+
+  // Notificar al equipo interno si hay mail configurado
+  if (process.env.EMAIL_INTERNO) {
+    await enviarNotificacionEjecutada({
+      emailInterno: process.env.EMAIL_INTERNO,
+      corrida,
+      cantOrdenes: ordenes.length,
+    });
+  }
 }
 
 // Helpers

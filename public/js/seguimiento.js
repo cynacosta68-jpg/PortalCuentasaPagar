@@ -54,10 +54,11 @@ async function verDetalle(id) {
           <span class="text-muted" style="font-size:12px; margin-left:8px">${o.numero_orden}</span><br>
           <small class="text-muted">Bruto: ${formatImporte(o.importe_bruto)} — Ret.: ${formatImporte(o.importe_total_ret)} — <strong>Pagar: ${formatImporte(o.importe_neto)}</strong></small>
         </div>
-        <div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
           ${o.mail_enviado_at
             ? `<span class="badge badge-pagado">Mail enviado ${formatFecha(o.mail_enviado_at)}</span>`
             : `<span class="badge badge-pendiente">Pendiente notificación</span>`}
+          <a href="/api/ordenes/${o.id}/pdf" target="_blank" class="btn btn-secondary btn-sm" style="font-size:11px; padding:3px 8px">⬇ OP</a>
         </div>
       </div>`).join('');
   } else {

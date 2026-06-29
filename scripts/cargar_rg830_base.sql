@@ -3,6 +3,9 @@
 -- Vigencia: actualizar según las tablas que publica ARCA periódicamente.
 -- IMPORTANTE: Estos valores son de referencia — confirmar con la norma vigente.
 
+-- Apunta al schema del portal (no al public de otras apps en la misma base).
+SET search_path TO portal, public;
+
 INSERT INTO tablas_ret_ganancias (regimen_codigo, descripcion, minimo_no_imponible, escala_json, vigencia_desde)
 VALUES (
   '306',

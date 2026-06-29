@@ -6,6 +6,7 @@ function register(router) {
   router.get('/api/dashboard/tendencia-egresos', tendenciaEgresos);
   router.get('/api/dashboard/top-proveedores', topProveedores);
   router.get('/api/dashboard/pagado-vs-pendiente', pagadoVsPendiente);
+  router.get('/api/dashboard/alertas', alertas);
 }
 
 async function metricas(req, res) {
@@ -61,6 +62,40 @@ async function pagadoVsPendiente(req, res) {
      FROM egresos WHERE estado != 'anulado'`
   );
   res.json(rows[0]);
+}
+
+async function alertas(req, res) {
+  const [vencidos, porVencer, pendAprov, consultasPend] = await Promise.all([
+    // Egresos con vto de pago pasado y aún pendiente
+    pool.query(
+      `SELECT COUNT(*) as n, COALESCE(SUM(importe_total),0) as total
+       FROM egresos
+       WHERE estado = 'pendiente' AND fecha_vto_pago < CURRENT_DATE`
+    ),
+    // Egresos que vencen en los próximos 3 días
+    pool.query(
+      `SELECT COUNT(*) as n, COALESCE(SUM(importe_total),0) as total
+       FROM egresos
+       WHERE estado = 'pendiente'
+         AND fecha_vto_pago BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'`
+    ),
+    // Corridas esperando aprobación de gerencia
+    pool.query(
+      `SELECT COUNT(*) as n FROM corridas_pago
+       WHERE estado = 'pendiente_aprob' AND token_expira_at > now()`
+    ),
+    // Consultas sin responder
+    pool.query(
+      `SELECT COUNT(*) as n FROM consultas_reclamos WHERE estado = 'pendiente'`
+    ),
+  ]);
+
+  res.json({
+    egresos_vencidos:   { n: parseInt(vencidos.rows[0].n),    total: parseFloat(vencidos.rows[0].total) },
+    egresos_por_vencer: { n: parseInt(porVencer.rows[0].n),   total: parseFloat(porVencer.rows[0].total) },
+    corridas_pend_aprov: parseInt(pendAprov.rows[0].n),
+    consultas_pendientes: parseInt(consultasPend.rows[0].n),
+  });
 }
 
 module.exports = { register };

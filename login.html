@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  portal-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-cambiar_en_produccion}
+      POSTGRES_DB: cuentas_pagar
+    volumes:
+      - portal-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d cuentas_pagar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  portal:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      portal-db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://portal:${DB_PASSWORD:-cambiar_en_produccion}@portal-db:5432/cuentas_pagar
+      PORT: 3000
+      ARCANUM_URL: ${ARCANUM_URL:-http://arcanum:8094}
+      ARCANUM_API_KEY: ${ARCANUM_API_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+      PORTAL_ADMIN_PASS: ${PORTAL_ADMIN_PASS}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      EMAIL_REMITENTE: ${EMAIL_REMITENTE:-}
+
+volumes:
+  portal-db-data:

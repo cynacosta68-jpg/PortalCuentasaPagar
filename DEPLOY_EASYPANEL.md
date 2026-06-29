@@ -1,140 +1,101 @@
-# Deploy en EasyPanel — Portal de Cuentas a Pagar
+'use strict';
+const pool = require('../db/pool');
 
-Guía paso a paso para dejar el portal corriendo en tu VPS de OVH con EasyPanel,
-usando tu **Postgres existente** (el mismo que usa TuFacturador) y el contenedor
-de **Arcanum** que ya tenés andando.
+function register(router) {
+  router.get('/api/dashboard', metricas);
+  router.get('/api/dashboard/tendencia-egresos', tendenciaEgresos);
+  router.get('/api/dashboard/top-proveedores', topProveedores);
+  router.get('/api/dashboard/pagado-vs-pendiente', pagadoVsPendiente);
+  router.get('/api/dashboard/alertas', alertas);
+}
 
-> ⚠️ El portal guarda todas sus tablas en un schema propio llamado **`portal`**.
-> No toca ni pisa las tablas de TuFacturador (que viven en `public`). Por eso es
-> seguro compartir la misma base de datos.
+async function metricas(req, res) {
+  const [comprobantes, importeTotal, corridas, proveedores] = await Promise.all([
+    pool.query(`SELECT COUNT(*) FROM egresos WHERE estado != 'anulado'`),
+    pool.query(`SELECT COALESCE(SUM(importe_total),0) as total FROM egresos WHERE estado != 'anulado'`),
+    pool.query(`SELECT COUNT(*) FROM corridas_pago WHERE estado NOT IN ('rechazada')`),
+    pool.query(`SELECT COUNT(*) FROM proveedores WHERE activo = true`),
+  ]);
 
----
+  res.json({
+    comprobantes: parseInt(comprobantes.rows[0].count),
+    importe_total: parseFloat(importeTotal.rows[0].total),
+    corridas: parseInt(corridas.rows[0].count),
+    proveedores: parseInt(proveedores.rows[0].count),
+  });
+}
 
-## 1. Subir el código a un repo nuevo de GitHub
+async function tendenciaEgresos(req, res) {
+  const { rows } = await pool.query(
+    `SELECT DATE_TRUNC('month', fecha_comprobante) as mes,
+            SUM(importe_total) as total,
+            COUNT(*) as cantidad
+     FROM egresos
+     WHERE estado != 'anulado'
+       AND fecha_comprobante >= CURRENT_DATE - INTERVAL '12 months'
+     GROUP BY mes
+     ORDER BY mes`
+  );
+  res.json(rows);
+}
 
-1. Creá un repo nuevo en GitHub, por ejemplo `portal-cuentas-pagar`.
-2. Subí **el contenido de la carpeta `portal-cuentas-pagar/`** como raíz del repo
-   (que el `Dockerfile`, `package.json`, `src/`, `public/` queden en la raíz, no
-   dentro de otra subcarpeta).
+async function topProveedores(req, res) {
+  const { rows } = await pool.query(
+    `SELECT p.razon_social, p.cuit,
+            SUM(e.importe_total) as total_imputado,
+            COUNT(e.id) as cantidad_comprobantes
+     FROM egresos e JOIN proveedores p ON p.id = e.proveedor_id
+     WHERE e.estado != 'anulado'
+     GROUP BY p.id, p.razon_social, p.cuit
+     ORDER BY total_imputado DESC
+     LIMIT 10`
+  );
+  res.json(rows);
+}
 
----
+async function pagadoVsPendiente(req, res) {
+  const { rows } = await pool.query(
+    `SELECT
+       SUM(CASE WHEN estado = 'pagado' THEN importe_total ELSE 0 END) as pagado,
+       SUM(CASE WHEN estado = 'pendiente' THEN importe_total ELSE 0 END) as pendiente,
+       SUM(CASE WHEN estado = 'en_corrida' THEN importe_total ELSE 0 END) as en_proceso
+     FROM egresos WHERE estado != 'anulado'`
+  );
+  res.json(rows[0]);
+}
 
-## 2. Crear el servicio en EasyPanel
+async function alertas(req, res) {
+  const [vencidos, porVencer, pendAprov, consultasPend] = await Promise.all([
+    // Egresos con vto de pago pasado y aún pendiente
+    pool.query(
+      `SELECT COUNT(*) as n, COALESCE(SUM(importe_total),0) as total
+       FROM egresos
+       WHERE estado = 'pendiente' AND fecha_vto_pago < CURRENT_DATE`
+    ),
+    // Egresos que vencen en los próximos 3 días
+    pool.query(
+      `SELECT COUNT(*) as n, COALESCE(SUM(importe_total),0) as total
+       FROM egresos
+       WHERE estado = 'pendiente'
+         AND fecha_vto_pago BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'`
+    ),
+    // Corridas esperando aprobación de gerencia
+    pool.query(
+      `SELECT COUNT(*) as n FROM corridas_pago
+       WHERE estado = 'pendiente_aprob' AND token_expira_at > now()`
+    ),
+    // Consultas sin responder
+    pool.query(
+      `SELECT COUNT(*) as n FROM consultas_reclamos WHERE estado = 'pendiente'`
+    ),
+  ]);
 
-Para que el portal pueda hablar con Arcanum por red interna, conviene crearlo en
-el **mismo proyecto de EasyPanel** donde está Arcanum.
+  res.json({
+    egresos_vencidos:   { n: parseInt(vencidos.rows[0].n),    total: parseFloat(vencidos.rows[0].total) },
+    egresos_por_vencer: { n: parseInt(porVencer.rows[0].n),   total: parseFloat(porVencer.rows[0].total) },
+    corridas_pend_aprov: parseInt(pendAprov.rows[0].n),
+    consultas_pendientes: parseInt(consultasPend.rows[0].n),
+  });
+}
 
-1. Entrá al proyecto de EasyPanel donde corre Arcanum.
-2. **+ Service → App**.
-3. Nombre del servicio: **`portal-cuentas-pagar`**.
-4. **Source**: GitHub → elegí el repo que creaste y la rama `main`.
-5. **Build**: dejá el método **Dockerfile** (EasyPanel detecta el `Dockerfile` de
-   la raíz automáticamente).
-6. No hace falta tocar el puerto: la app escucha en el **3000** (ya viene
-   configurado).
-
----
-
-## 3. Variables de entorno
-
-En la pestaña **Environment** del servicio, pegá esto y completá los valores:
-
-```env
-NODE_ENV=production
-PORT=3000
-
-# ── Base de datos (la MISMA que usás para TuFacturador) ──────────────
-# Reutilizá exactamente la connection string de tu Postgres existente.
-# El portal crea y usa su propio schema "portal", no pisa nada de TuFacturador.
-DATABASE_URL=postgres://USUARIO:PASSWORD@HOST_INTERNO:5432/NOMBRE_BASE
-
-# ── Arcanum (gateway ARCA) ──────────────────────────────────────────
-# Si el portal está en el mismo proyecto que Arcanum, usá el nombre interno:
-ARCANUM_URL=http://arcanum:8094
-ARCANUM_API_KEY=la_misma_api_key_que_configuraste_en_arcanum
-
-# ── Seguridad (login del portal) ────────────────────────────────────
-SESSION_SECRET=GENERAR    # corré: openssl rand -hex 32 (firma la sesión)
-PORTAL_ADMIN_PASS=elegí_una_contraseña   # con esta contraseña entrás al portal
-
-# ── Datos de tu empresa (salen impresos en órdenes de pago y certificados) ──
-EMPRESA_NOMBRE=Mi Empresa S.A.
-EMPRESA_CUIT=30000000000
-EMPRESA_DOMICILIO=Av. Ejemplo 1234, CABA
-
-# ── Email (órdenes a proveedores y aprobaciones a gerencia) ─────────
-# Si dejás SMTP_HOST vacío, los mails NO se envían de verdad (modo prueba).
-SMTP_HOST=smtp.tuproveedor.com
-SMTP_PORT=587
-SMTP_SECURE=false           # true si tu proveedor usa SSL puerto 465
-SMTP_USER=tucuenta@empresa.com
-SMTP_PASS=tu_password_smtp
-SMTP_FROM=pagos@empresa.com
-EMAIL_INTERNO=contabilidad@empresa.com
-
-# ── URL pública del portal (para el link de aprobación de gerencia) ──
-# Completala DESPUÉS de saber el dominio (paso 4). Ej: https://portal-xxx.easypanel.host
-BASE_URL=https://TU_DOMINIO
-```
-
-### Notas importantes
-
-- **`DATABASE_URL`**: usá la misma que ya tenés andando con TuFacturador. El
-  `HOST_INTERNO` suele ser el nombre del servicio Postgres dentro de EasyPanel.
-  El usuario debe tener permiso para crear schemas (el dueño de la base lo tiene).
-- **`ARCANUM_URL`**: `http://arcanum:8094` funciona solo si el portal está en el
-  **mismo proyecto** que Arcanum. Si los pusieras en proyectos separados, usá la
-  URL pública de Arcanum (`https://...`) en su lugar.
-- **`BASE_URL`**: completala una vez que tengas el dominio del paso 4 y volvé a
-  desplegar.
-
----
-
-## 4. Dominio
-
-En la pestaña **Domains** del servicio:
-
-- **Opción simple**: tocá **Add Domain** y EasyPanel te asigna uno automático
-  tipo `portal-cuentas-pagar-xxxx.easypanel.host`. Apuntalo al puerto **3000**.
-- **Opción con dominio propio**: agregá tu subdominio (ej. `pagos.tuempresa.com`),
-  apuntá el DNS a tu VPS y EasyPanel le saca el certificado HTTPS solo.
-
-Después de elegir el dominio, copialo en la variable **`BASE_URL`** y volvé a
-desplegar para que los links de aprobación salgan correctos.
-
----
-
-## 5. Desplegar
-
-1. Tocá **Deploy**.
-2. Mirá los logs. En el primer arranque vas a ver:
-   ```
-   [server] ejecutando migraciones...
-   [migrate] aplicada: 001_schema_inicial.sql
-   [migrate] listo
-   [server] Portal de Cuentas a Pagar corriendo en http://localhost:3000
-   ```
-   Eso significa que el schema `portal` y todas las tablas se crearon solas.
-3. Abrí el dominio en el navegador. Deberías ver el panel del portal.
-
----
-
-## 6. (Opcional) Cargar tablas base de retenciones RG 830
-
-El cálculo de retención de Ganancias necesita las escalas de la RG 830. Hay un
-script con valores **de referencia** que vos (como contador) tenés que confirmar
-contra la norma vigente antes de usar en producción.
-
-Para cargarlo, abrí la consola SQL de tu Postgres (o `psql`) y ejecutá el
-contenido de `scripts/cargar_rg830_base.sql`. El script ya apunta solo al schema
-`portal`, así que no afecta a TuFacturador.
-
----
-
-## Resumen de lo que NO necesitás hacer
-
-- ❌ No uses el `docker-compose.yml` del repo en EasyPanel: ese levanta un Postgres
-  nuevo (`portal-db`), pensado solo para correr local. En EasyPanel apuntás a tu
-  base existente con `DATABASE_URL`.
-- ❌ No corras migraciones a mano: el server las ejecuta solo al arrancar.
-- ❌ No vas a romper TuFacturador: el portal vive en su propio schema `portal`.
+module.exports = { register };

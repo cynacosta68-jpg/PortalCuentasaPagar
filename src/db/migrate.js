@@ -3,11 +3,20 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const DB_SCHEMA = process.env.DB_SCHEMA || 'portal';
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  options: `-c search_path=${DB_SCHEMA},public`,
+});
 
 async function migrate() {
   const migrationsDir = path.join(__dirname, 'migrations');
   const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+
+  // El schema debe existir antes que cualquier tabla (incluido _migraciones),
+  // porque el search_path apunta a él. No toca el schema public de otras apps.
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${DB_SCHEMA}`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS _migraciones (

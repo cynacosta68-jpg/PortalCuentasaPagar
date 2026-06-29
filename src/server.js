@@ -24,6 +24,7 @@ const routeModules = [
   require('./routes/pagos'),
   require('./routes/comprobantes'),
   require('./routes/descargas'),
+  require('./routes/consultas'),
 ];
 
 // Mini router: mapa de rutas registradas

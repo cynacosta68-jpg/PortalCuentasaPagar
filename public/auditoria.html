@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auditoría — Portal de Cuentas a Pagar</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">CP</div>
+      <span class="brand-name">Cuentas<br>a Pagar</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="/" class="nav-link">⬛ Panel</a></li>
+      <li><a href="/proveedores.html" class="nav-link">👥 Proveedores</a></li>
+      <li><a href="/egresos.html" class="nav-link">📄 Egresos</a></li>
+      <li><a href="/pagos.html" class="nav-link">💸 Pagos</a></li>
+      <li><a href="/seguimiento.html" class="nav-link">📊 Seguimiento</a></li>
+      <li><a href="/consultas.html" class="nav-link">💬 Consultas</a></li>
+      <li><a href="/descargas.html" class="nav-link">⬇ Descargas</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header class="topbar">
+      <h1 class="page-title">Auditoría</h1>
+    </header>
+
+    <div class="page-actions">
+      <div class="flex gap-2">
+        <input type="text" id="f-usuario" class="form-control" style="width:150px" placeholder="Usuario">
+        <select id="f-accion" class="form-control" style="width:150px">
+          <option value="">Todas las acciones</option>
+          <option value="crear">Crear</option>
+          <option value="editar">Editar</option>
+          <option value="eliminar">Eliminar</option>
+          <option value="planificar">Planificar</option>
+          <option value="ejecutar">Ejecutar</option>
+          <option value="autorizar">Autorizar</option>
+        </select>
+        <input type="date" id="f-desde" class="form-control" style="width:150px">
+        <input type="date" id="f-hasta" class="form-control" style="width:150px">
+        <button class="btn btn-secondary" id="btn-filtrar">Filtrar</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Fecha y hora</th><th>Usuario</th><th>Rol</th>
+            <th>Acción</th><th>Entidad</th><th>ID</th><th>Detalle</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-auditoria"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="/js/app.js"></script>
+  <script src="/js/auditoria.js"></script>
+</body>
+</html>

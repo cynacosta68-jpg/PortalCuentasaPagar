@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proveedores — Portal de Cuentas a Pagar</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">CP</div>
+      <span class="brand-name">Cuentas<br>a Pagar</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="/" class="nav-link">⬛ Panel</a></li>
+      <li><a href="/proveedores.html" class="nav-link active">👥 Proveedores</a></li>
+      <li><a href="/egresos.html" class="nav-link">📄 Egresos</a></li>
+      <li><a href="/pagos.html" class="nav-link">💸 Pagos</a></li>
+      <li><a href="/seguimiento.html" class="nav-link">📊 Seguimiento</a></li>
+      <li><a href="/consultas.html" class="nav-link">💬 Consultas</a></li>
+      <li><a href="/descargas.html" class="nav-link">⬇ Descargas</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header class="topbar">
+      <h1 class="page-title">Proveedores</h1>
+    </header>
+
+    <div class="page-actions">
+      <div>
+        <input type="search" id="buscar" class="form-control" placeholder="Buscar por razón social o CUIT..." style="width:280px">
+      </div>
+      <button class="btn btn-primary" id="btn-nuevo">+ Nuevo proveedor</button>
+    </div>
+
+    <div class="card mt-4">
+      <div class="table-wrapper">
+        <table class="table" id="tabla-prov">
+          <thead>
+            <tr>
+              <th>Razón social</th>
+              <th>CUIT</th>
+              <th>Condición fiscal</th>
+              <th>Mail</th>
+              <th>Ret. Gan.</th>
+              <th>Ret. IVA</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="prov-body">
+            <tr><td colspan="7" class="text-center text-muted">Cargando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <!-- Modal alta/edición de proveedor -->
+  <div class="modal-overlay hidden" id="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-title">Nuevo proveedor</h2>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div id="modal-alert"></div>
+
+      <!-- Búsqueda por CUIT con autocompletado ARCA -->
+      <div class="form-group" style="margin-bottom:16px">
+        <label>CUIT del proveedor</label>
+        <div class="flex gap-2">
+          <input type="text" id="f-cuit" class="form-control" placeholder="20-12345678-9" maxlength="13" style="flex:1">
+          <button class="btn btn-secondary" id="btn-buscar-arca" type="button">Buscar en ARCA</button>
+        </div>
+        <small class="text-muted" id="arca-status"></small>
+      </div>
+
+      <div class="separator"></div>
+
+      <div class="form-grid">
+        <div class="form-group" style="grid-column: span 2">
+          <label>Razón social *</label>
+          <input type="text" id="f-razon_social" class="form-control" placeholder="Se completa automáticamente desde ARCA">
+        </div>
+        <div class="form-group">
+          <label>Condición fiscal</label>
+          <input type="text" id="f-condicion_fiscal" class="form-control" readonly placeholder="—">
+        </div>
+        <div class="form-group">
+          <label>Categoría monotributo</label>
+          <input type="text" id="f-categoria_monotributo" class="form-control" readonly placeholder="—">
+        </div>
+        <div class="form-group" style="grid-column: span 2">
+          <label>Actividad</label>
+          <input type="text" id="f-actividad" class="form-control" readonly placeholder="—">
+        </div>
+        <div class="form-group" style="grid-column: span 2">
+          <label>Domicilio fiscal</label>
+          <input type="text" id="f-domicilio_fiscal" class="form-control" readonly placeholder="—">
+        </div>
+        <div class="form-group" style="grid-column: span 2">
+          <label>Mail de contacto *</label>
+          <input type="email" id="f-mail" class="form-control" placeholder="proveedor@empresa.com">
+        </div>
+      </div>
+
+      <div class="separator"></div>
+
+      <h4 style="margin-bottom:12px; font-size:13px; font-weight:700; text-transform:uppercase; color:var(--text-muted)">Retenciones aplicables</h4>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Retención ganancias (RG830)</label>
+          <div class="checkboxes">
+            <label class="checkbox-item">
+              <input type="checkbox" id="f-ret_ganancias">
+              Aplica retención de ganancias
+            </label>
+          </div>
+          <select id="f-ret_ganancias_regimen" class="form-control" style="margin-top:8px; display:none" disabled></select>
+          <div id="regimenes-ganancias" style="margin-top:8px; display:none; max-height:150px; overflow:auto; border:1px solid var(--border); border-radius:var(--radius); padding:8px">
+            <p class="hint" style="margin:0 0 6px">Marcá todos los regímenes que apliquen a este proveedor:</p>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Retención IVA (RG2854)</label>
+          <div class="checkboxes">
+            <label class="checkbox-item">
+              <input type="checkbox" id="f-ret_iva">
+              Aplica retención de IVA
+            </label>
+          </div>
+          <select id="f-ret_iva_alicuota" class="form-control" style="margin-top:8px" disabled>
+            <option value="">— Alícuota IVA —</option>
+            <option value="100">100% (Responsable Inscripto)</option>
+            <option value="80">80% (casos especiales)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Retención Ingresos Brutos</label>
+          <div class="checkboxes">
+            <label class="checkbox-item">
+              <input type="checkbox" id="f-ret_iibb">
+              Aplica retención de IIBB
+            </label>
+          </div>
+          <input type="number" step="0.01" min="0" id="f-ret_iibb_alicuota" class="form-control" style="margin-top:8px" placeholder="Alícuota % (ej. 3.00)" disabled>
+          <input type="text" id="f-ret_iibb_jurisdiccion" class="form-control" style="margin-top:8px" placeholder="Jurisdicción (ej. Chubut)" value="Chubut" disabled>
+        </div>
+        <div class="form-group">
+          <label>Retención SUSS</label>
+          <div class="checkboxes">
+            <label class="checkbox-item">
+              <input type="checkbox" id="f-ret_suss">
+              Aplica retención de SUSS
+            </label>
+          </div>
+          <input type="number" step="0.01" min="0" id="f-ret_suss_alicuota" class="form-control" style="margin-top:8px" placeholder="Alícuota % (ej. 1.00)" disabled>
+        </div>
+
+        <div class="form-group" style="grid-column:1/-1; border-top:1px solid var(--border); padding-top:12px; margin-top:4px">
+          <label>Certificado de no retención / exclusión</label>
+          <div class="checkboxes">
+            <label class="checkbox-item">
+              <input type="checkbox" id="f-cert_no_retencion">
+              Posee certificado de no retención / exclusión
+            </label>
+          </div>
+          <div id="cert-vigencia" style="display:none; gap:12px; margin-top:8px; grid-template-columns:1fr 1fr; display:grid">
+            <div>
+              <label style="font-size:12px">Vigencia desde</label>
+              <input type="date" id="f-cert_no_ret_desde" class="form-control">
+            </div>
+            <div>
+              <label style="font-size:12px">Vigencia hasta</label>
+              <input type="date" id="f-cert_no_ret_hasta" class="form-control">
+            </div>
+          </div>
+          <p class="hint" style="margin-top:6px">Mientras esté vigente, no se le calcularán retenciones.</p>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancelar">Cancelar</button>
+        <button class="btn btn-primary" id="btn-guardar">Guardar proveedor</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/js/proveedores.js"></script>
+</body>
+</html>
